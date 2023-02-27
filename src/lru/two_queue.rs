@@ -182,12 +182,12 @@ impl<RH: BuildHasher, FH: BuildHasher, GH: BuildHasher> TwoQueueCacheBuilder<RH,
         }
 
         let rr = self.recent_ratio.unwrap();
-        if rr < 0.0 || rr > 1.0 {
+        if !(0.0..=1.0).contains(&rr) {
             return Err(CacheError::InvalidRecentRatio(rr));
         }
 
         let gr = self.ghost_ratio.unwrap();
-        if gr < 0.0 || gr > 1.0 {
+        if !(0.0..=1.0).contains(&gr) {
             return Err(CacheError::InvalidGhostRatio(gr));
         }
 
@@ -353,11 +353,11 @@ impl<K: Hash + Eq, V> TwoQueueCache<K, V> {
             return Err(CacheError::InvalidSize(size));
         }
 
-        if rr < 0.0 || rr > 1.0 {
+        if !(0.0..=1.0).contains(&rr) {
             return Err(CacheError::InvalidRecentRatio(rr));
         }
 
-        if gr < 0.0 || gr > 1.0 {
+        if !(0.0..=1.0).contains(&gr) {
             return Err(CacheError::InvalidGhostRatio(gr));
         }
 
@@ -443,20 +443,19 @@ impl<K: Hash + Eq, V, RH: BuildHasher, FH: BuildHasher, GH: BuildHasher> Cache<K
 
         // Check if the value is recently used, and promote
         // the value into the frequent list
-        if let Some(_) = self
+        if let Some(mut ent) = self
             .recent
             // here we remove an entry from recent LRU if key exists
             .remove_and_return_ent(&key_ref)
-            .map(|mut ent| {
-                unsafe {
-                    swap_value(&mut v, ent.as_mut());
-                }
-                // here we add the entry to frequent LRU,
-                // the result will always be PutResult::Put
-                // because we have removed this entry from recent LRU
-                self.frequent.put_box(ent)
-            })
         {
+            unsafe {
+                swap_value(&mut v, ent.as_mut());
+            }
+            // here we add the entry to frequent LRU,
+            // the result will always be PutResult::Put
+            // because we have removed this entry from recent LRU
+            self.frequent.put_box(ent);
+
             return PutResult::Update(v);
         }
 
@@ -481,7 +480,7 @@ impl<K: Hash + Eq, V, RH: BuildHasher, FH: BuildHasher, GH: BuildHasher> Cache<K
                         Some(mut ent) => {
                             let ent_ptr = ent.as_mut();
                             unsafe {
-                                mem::swap(&mut v, &mut (*(*ent_ptr).val.as_mut_ptr()) as &mut V);
+                                mem::swap(&mut v, &mut (*(ent_ptr).val.as_mut_ptr()) as &mut V);
                             }
                             self.frequent.put_box(ent);
                             PutResult::Update(v)
@@ -492,7 +491,7 @@ impl<K: Hash + Eq, V, RH: BuildHasher, FH: BuildHasher, GH: BuildHasher> Cache<K
                         self.ghost.detach(ent_ptr);
 
                         unsafe {
-                            mem::swap(&mut v, &mut (*(*ent_ptr).val.as_mut_ptr()) as &mut V);
+                            mem::swap(&mut v, &mut (*(ent_ptr).val.as_mut_ptr()) as &mut V);
                             self.frequent.put_box(ent);
                             match rst {
                                 None => PutResult::Update(v),
@@ -509,7 +508,7 @@ impl<K: Hash + Eq, V, RH: BuildHasher, FH: BuildHasher, GH: BuildHasher> Cache<K
                 let ent_ptr = ent.as_mut();
                 self.ghost.detach(ent_ptr);
                 unsafe {
-                    mem::swap(&mut v, &mut (*(*ent_ptr).val.as_mut_ptr()) as &mut V);
+                    mem::swap(&mut v, &mut (*(ent_ptr).val.as_mut_ptr()) as &mut V);
                 }
                 self.frequent.put_box(ent);
                 PutResult::Update(v)
@@ -1779,12 +1778,15 @@ mod test {
             .chain(cache.recent.keys_lru())
             .enumerate()
             .map(|(idx, k)| (idx as u64, *k))
+            .into_iter()
             .collect::<Vec<(u64, u64)>>();
 
-        rst.into_iter().for_each(|(idx, k)| match cache.get(&k) {
-            None => panic!("bad: {}", k),
-            Some(val) => assert_eq!(*val, idx + 128),
-        });
+        for (idx, k) in rst.iter() {
+            match cache.get(k) {
+                None => panic!("bad: {}", *k),
+                Some(val) => assert_eq!(*val, idx + 128),
+            }
+        }
 
         (0..128).for_each(|k| {
             assert_eq!(cache.get(&k), None);

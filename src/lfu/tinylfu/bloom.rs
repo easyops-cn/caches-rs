@@ -3,12 +3,14 @@
 //! This file is a mechanical translation of the reference Golang code, available at https://github.com/dgraph-io/ristretto/blob/master/z/bbloom.go
 //!
 //! I claim no additional copyright over the original implementation.
+#![allow(clippy::all)]
+#![allow(dead_code)]
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr::addr_of;
+use num_traits::FloatConst;
 
 const MASK: [u8; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
-const LN_2: f64 = 0.69314718056;
 
 struct Size {
     size: u64,
@@ -37,8 +39,8 @@ struct EntriesLocs {
 }
 
 fn calc_size_by_wrong_positives(num_entries: f64, wrongs: f64) -> EntriesLocs {
-    let size = -1f64 * num_entries * wrongs.ln() / LN_2.powf(2f64);
-    let locs = (LN_2 * size / num_entries).ceil();
+    let size = -1f64 * num_entries * wrongs.ln() / f64::LN_2().powf(2f64);
+    let locs = (f64::LN_2() * size / num_entries).ceil();
 
     EntriesLocs {
         entries: size as u64,
@@ -71,15 +73,14 @@ impl Bloom {
 
         let size = get_size(entries_locs.entries);
 
-        let this = Self {
+        Self {
             bitset: vec![0; (size.size >> 6) as usize],
             elem_num: 0,
             size: size.size - 1,
             size_exp: size.exp,
             set_locs: entries_locs.locs,
             shift: 64 - size.exp,
-        };
-        this
+        }
     }
 
     /// `size` makes Bloom filter with as bitset of size sz.

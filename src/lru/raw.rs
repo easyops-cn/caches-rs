@@ -197,13 +197,7 @@ impl<K: Hash + Eq, V, S: BuildHasher> RawLRU<K, V, DefaultEvictCallback, S> {
     /// let mut cache: RawLRU<isize, &str> = RawLRU::with_hasher(10, s).unwrap();
     /// ```
     pub fn with_hasher(cap: usize, hash_builder: S) -> Result<Self, CacheError> {
-        check_size(cap).map(|_| {
-            Self::construct(
-                cap,
-                HashMap::with_hasher(hash_builder),
-                None,
-            )
-        })
+        check_size(cap).map(|_| Self::construct(cap, HashMap::with_hasher(hash_builder), None))
     }
 }
 
@@ -375,7 +369,7 @@ impl<K: Hash + Eq, V, E: OnEvictCallback, S: BuildHasher> Cache<K, V> for RawLRU
     {
         self.map
             .get(k)
-            .map(|node| unsafe { &(*(*node).val.as_ptr()) as &V })
+            .map(|node| unsafe { &(*(node).val.as_ptr()) as &V })
     }
 
     /// Returns a mutable reference to the value corresponding to the key in the cache or `None`
@@ -401,7 +395,7 @@ impl<K: Hash + Eq, V, E: OnEvictCallback, S: BuildHasher> Cache<K, V> for RawLRU
     {
         match self.map.get_mut(k) {
             None => None,
-            Some(node) => Some(unsafe { &mut (*(*node).val.as_mut_ptr()) as &mut V }),
+            Some(node) => Some(unsafe { &mut (*(node).val.as_mut_ptr()) as &mut V }),
         }
     }
 
@@ -613,13 +607,7 @@ impl<K: Hash + Eq, V, E: OnEvictCallback, S: BuildHasher> RawLRU<K, V, E, S> {
     /// let cache: RawLRU<isize, &str, EvictedCounter, DefaultHashBuilder> = RawLRU::with_on_evict_cb_and_hasher(10, EvictedCounter::default(), DefaultHashBuilder::default()).unwrap();
     /// ```
     pub fn with_on_evict_cb_and_hasher(cap: usize, cb: E, hasher: S) -> Result<Self, CacheError> {
-        check_size(cap).map(|_| {
-            Self::construct(
-                cap,
-                HashMap::with_hasher(hasher),
-                Some(cb),
-            )
-        })
+        check_size(cap).map(|_| Self::construct(cap, HashMap::with_hasher(hasher), Some(cb)))
     }
 
     /// Creates a new LRU Cache with the given capacity.
@@ -787,7 +775,7 @@ impl<K: Hash + Eq, V, E: OnEvictCallback, S: BuildHasher> RawLRU<K, V, E, S> {
     pub fn peek_or_put(&mut self, k: K, v: V) -> (Option<&V>, Option<PutResult<K, V>>) {
         match self.map.get(&KeyRef { k: &k }) {
             None => (None, Some(self.put_in(k, v))),
-            Some(ent) => unsafe { (Some(&*(**ent).val.as_ptr() as &V), None) },
+            Some(ent) => unsafe { (Some(&*(ent).val.as_ptr() as &V), None) },
         }
     }
 
@@ -815,7 +803,7 @@ impl<K: Hash + Eq, V, E: OnEvictCallback, S: BuildHasher> RawLRU<K, V, E, S> {
         let k_ref = KeyRef { k: &k };
         match self.map.get_mut(&k_ref) {
             None => (None, Some(self.put_in(k, v))),
-            Some(v) => unsafe { (Some(&mut *(&mut **v).val.as_mut_ptr() as &mut V), None) },
+            Some(v) => unsafe { (Some(&mut *v.val.as_mut_ptr() as &mut V), None) },
         }
     }
 
@@ -1314,8 +1302,8 @@ impl<K: Hash + Eq, V, E: OnEvictCallback, S: BuildHasher> RawLRU<K, V, E, S> {
 
             // if the key and value with the least recent used entry
             unsafe {
-                mem::swap(&mut v, &mut (*(*old_node_ptr).val.as_mut_ptr()) as &mut V);
-                mem::swap(&mut k, &mut (*(*old_node_ptr).key.as_mut_ptr()) as &mut K);
+                mem::swap(&mut v, &mut (*(old_node_ptr).val.as_mut_ptr()) as &mut V);
+                mem::swap(&mut k, &mut (*(old_node_ptr).key.as_mut_ptr()) as &mut K);
             }
 
             let node_ptr: *mut EntryNode<K, V> = &mut *old_node;
@@ -2038,9 +2026,9 @@ mod tests {
         let cache: RawLRU<u64, &str> = map.into_iter().collect();
 
         assert_eq!(cache.cap(), 3);
-        assert_opt_eq(cache.peek(&1), &"a");
-        assert_opt_eq(cache.peek(&2), &"b");
-        assert_opt_eq(cache.peek(&3), &"c");
+        assert_opt_eq(cache.peek(&1), "a");
+        assert_opt_eq(cache.peek(&2), "b");
+        assert_opt_eq(cache.peek(&3), "c");
 
         let mut map = BTreeMap::new();
         map.insert(1, "a");
@@ -2050,9 +2038,9 @@ mod tests {
         let cache: RawLRU<u64, &str> = map.into_iter().collect();
 
         assert_eq!(cache.cap(), 3);
-        assert_opt_eq(cache.peek(&1), &"a");
-        assert_opt_eq(cache.peek(&2), &"b");
-        assert_opt_eq(cache.peek(&3), &"c");
+        assert_opt_eq(cache.peek(&1), "a");
+        assert_opt_eq(cache.peek(&2), "b");
+        assert_opt_eq(cache.peek(&3), "c");
     }
 
     #[test]
@@ -2897,14 +2885,8 @@ mod tests {
     fn test_no_memory_leaks_with_remove() {
         static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-        #[derive(Hash, Eq)]
+        #[derive(Hash, PartialEq, Eq)]
         struct KeyDropCounter(usize);
-
-        impl PartialEq for KeyDropCounter {
-            fn eq(&self, other: &Self) -> bool {
-                self.0.eq(&other.0)
-            }
-        }
 
         impl Drop for KeyDropCounter {
             fn drop(&mut self) {

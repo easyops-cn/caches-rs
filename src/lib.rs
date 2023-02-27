@@ -262,10 +262,7 @@ pub enum PutResult<K, V> {
 impl<K: PartialEq, V: PartialEq> PartialEq for PutResult<K, V> {
     fn eq(&self, other: &Self) -> bool {
         match self {
-            PutResult::Put => match other {
-                PutResult::Put => true,
-                _ => false,
-            },
+            PutResult::Put => matches!(other, PutResult::Put),
             PutResult::Update(old_val) => match other {
                 PutResult::Update(v) => *v == *old_val,
                 _ => false,
@@ -279,8 +276,8 @@ impl<K: PartialEq, V: PartialEq> PartialEq for PutResult<K, V> {
                     evicted: other_evicted,
                     update: other_update,
                 } => {
-                    (*evicted).0 == (*other_evicted).0
-                        && (*evicted).1 == (*other_evicted).1
+                    evicted.0 == other_evicted.0
+                        && evicted.1 == other_evicted.1
                         && *update == *other_update
                 }
                 _ => false,
@@ -299,7 +296,7 @@ impl<K: Debug, V: Debug> Debug for PutResult<K, V> {
             PutResult::Evicted { key: k, value: v } => {
                 write!(f, "PutResult::Evicted {{key: {:?}, val: {:?}}}", *k, *v)
             }
-            PutResult::EvictedAndUpdate { evicted, update } => write!(f, "PutResult::EvictedAndUpdate {{ evicted: {{key: {:?}, value: {:?}}}, update: {:?} }}", (*evicted).0, (*evicted).1, *update),
+            PutResult::EvictedAndUpdate { evicted, update } => write!(f, "PutResult::EvictedAndUpdate {{ evicted: {{key: {:?}, value: {:?}}}, update: {:?} }}", evicted.0, evicted.1, *update),
         }
     }
 }

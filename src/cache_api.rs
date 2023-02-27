@@ -66,6 +66,15 @@ pub trait Cache<K: Hash + Eq, V> {
 
     /// Returns a bool indicating whether the cache is empty or not.
     fn is_empty(&self) -> bool;
+
+    /// 总共接受了多少读请求
+    fn total_count(&self) -> u64 {
+        1
+    }
+    /// 命中了多少个
+    fn hit_count(&self) -> u64 {
+        1
+    }
 }
 
 /// Implement this trait for Cache to support resize.

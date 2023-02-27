@@ -169,6 +169,8 @@ impl<RH: BuildHasher, REH: BuildHasher, FH: BuildHasher, FEH: BuildHasher>
             recent_evict,
             frequent: freq,
             frequent_evict: freq_evict,
+            hit_count: 0,
+            total_count: 0,
         })
     }
 }
@@ -287,6 +289,9 @@ pub struct AdaptiveCache<
 
     /// `frequent_evict` is the LRU for evictions from `frequent`
     frequent_evict: RawLRU<K, V, DefaultEvictCallback, FEH>,
+
+    hit_count: u64,
+    total_count: u64,
 }
 
 impl<K: Hash + Eq, V> AdaptiveCache<K, V> {
@@ -328,20 +333,19 @@ impl<K: Hash + Eq, V, RH: BuildHasher, REH: BuildHasher, FH: BuildHasher, FEH: B
         let key_ref = KeyRef { k: &k };
         // check if the value is contained in recent, and potentially
         // promote it to frequent
-        if let Some(_) = self
+        if let Some(mut ent) = self
             .recent
             // here we remove an entry from recent LRU if key exists
             .remove_and_return_ent(&key_ref)
-            .map(|mut ent| {
-                unsafe {
-                    swap_value(&mut v, ent.as_mut());
-                }
-                // here we add the entry to frequent LRU,
-                // the result will always be PutResult::Put
-                // because we have removed this entry from recent LRU
-                self.frequent.put_box(ent);
-            })
         {
+            unsafe {
+                swap_value(&mut v, ent.as_mut());
+            }
+            // here we add the entry to frequent LRU,
+            // the result will always be PutResult::Put
+            // because we have removed this entry from recent LRU
+            self.frequent.put_box(ent);
+
             return PutResult::Update(v);
         }
 
@@ -468,12 +472,18 @@ impl<K: Hash + Eq, V, RH: BuildHasher, REH: BuildHasher, FH: BuildHasher, FEH: B
         KeyRef<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
+        self.total_count += 1;
         // If the value is contained in recent, then
         // promote it to frequent
-        self.recent
+        let result = self
+            .recent
             .peek(k)
             .and_then(|v| self.move_to_frequent(k, v))
-            .or_else(|| self.frequent.get(k))
+            .or_else(|| self.frequent.get(k));
+        if result.is_some() {
+            self.hit_count += 1;
+        }
+        result
     }
 
     /// Returns a mutable reference to the value of the key in the cache or `None` if it
@@ -499,12 +509,20 @@ impl<K: Hash + Eq, V, RH: BuildHasher, REH: BuildHasher, FH: BuildHasher, FEH: B
         KeyRef<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
+        self.total_count += 1;
+
         // If the value is contained in recent, then
         // promote it to frequent
-        self.recent
+        let result = self
+            .recent
             .peek_mut(k)
             .and_then(|v| self.move_to_frequent(k, v))
-            .or_else(|| self.frequent.get_mut(k))
+            .or_else(|| self.frequent.get_mut(k));
+
+        if result.is_some() {
+            self.hit_count += 1;
+        }
+        result
     }
 
     /// Returns a reference to the value corresponding to the key in the cache or `None` if it is
@@ -675,6 +693,14 @@ impl<K: Hash + Eq, V, RH: BuildHasher, REH: BuildHasher, FH: BuildHasher, FEH: B
             && self.recent_evict.is_empty()
             && self.frequent.is_empty()
             && self.frequent_evict.is_empty()
+    }
+
+    fn total_count(&self) -> u64 {
+        self.total_count
+    }
+
+    fn hit_count(&self) -> u64 {
+        self.hit_count
     }
 }
 
@@ -1931,10 +1957,12 @@ mod test {
             .map(|(idx, k)| (idx as u64, *k))
             .collect::<Vec<(u64, u64)>>();
 
-        rst.into_iter().for_each(|(idx, k)| match cache.get(&k) {
-            None => panic!("bad: {}", k),
-            Some(val) => assert_eq!(*val, idx + 128),
-        });
+        for (idx, k) in rst.iter() {
+            match cache.get(k) {
+                None => panic!("bad: {}", *k),
+                Some(val) => assert_eq!(*val, idx + 128),
+            }
+        }
 
         (0..128).for_each(|k| {
             assert_eq!(cache.get(&k), None);
