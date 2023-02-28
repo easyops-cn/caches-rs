@@ -2,7 +2,7 @@ mod error;
 pub use error::WTinyLFUError;
 
 use crate::lfu::{
-    tinylfu::{TinyLFUError, TinyLFU, TinyLFUBuilder, DEFAULT_FALSE_POSITIVE_RATIO},
+    tinylfu::{TinyLFU, TinyLFUBuilder, DEFAULT_FALSE_POSITIVE_RATIO},
     DefaultKeyHasher, KeyHasher,
 };
 use crate::lru::{SegmentedCache, SegmentedCacheBuilder};
@@ -251,40 +251,65 @@ impl<K: Hash + Eq, KH: KeyHasher<K>, FH: BuildHasher, RH: BuildHasher, WH: Build
             return Err(WTinyLFUError::InvalidSamples(self.samples));
         }
 
-        let fp_ratio = self.false_positive_ratio.unwrap();
+        let fp_ratio = self.false_positive_ratio.unwrap_or_default();
         if fp_ratio <= 0.0 || fp_ratio >= 1.0 {
             return Err(WTinyLFUError::InvalidFalsePositiveRatio(fp_ratio));
         }
 
-        let lru = LRUCache::with_hasher(self.window_cache_size, self.window_cache_hasher.unwrap())
-            .unwrap();
+        let window_cache_hasher = match self.window_cache_hasher {
+            None => {
+                return Err(WTinyLFUError::InvalidKeyHasher);
+            }
+            Some(kh) => kh,
+        };
+        let main_cache_probationary_hasher = match self.main_cache_probationary_hasher {
+            None => {
+                return Err(WTinyLFUError::InvalidKeyHasher);
+            }
+            Some(kh) => kh,
+        };
+        let main_cache_protected_hasher = match self.main_cache_protected_hasher {
+            None => {
+                return Err(WTinyLFUError::InvalidKeyHasher);
+            }
+            Some(kh) => kh,
+        };
+        let key_hasher = match self.key_hasher {
+            None => {
+                return Err(WTinyLFUError::InvalidKeyHasher);
+            }
+            Some(kh) => kh,
+        };
+
+        let lru = LRUCache::with_hasher(self.window_cache_size, window_cache_hasher)
+            .map_err(WTinyLFUError::from)?;
 
         let slru = SegmentedCacheBuilder::new(
             self.main_cache_probationary_size,
             self.main_cache_protected_size,
         )
-        .set_probationary_hasher(self.main_cache_probationary_hasher.unwrap())
-        .set_protected_hasher(self.main_cache_protected_hasher.unwrap())
+        .set_probationary_hasher(main_cache_probationary_hasher)
+        .set_protected_hasher(main_cache_protected_hasher)
         .finalize()
-        .unwrap();
+        .map_err(WTinyLFUError::from)?;
 
         let size = self.window_cache_size
             + self.main_cache_protected_size
             + self.main_cache_probationary_size;
 
         let tinylfu = TinyLFUBuilder::new(size, self.samples)
-            .set_key_hasher(self.key_hasher.unwrap())
+            .set_key_hasher(key_hasher)
             .set_false_positive_ratio(fp_ratio)
             .finalize()
-            .map_err(|e| match e {
-                TinyLFUError::InvalidCountMinWidth(v) => WTinyLFUError::InvalidCountMinWidth(v),
-                TinyLFUError::InvalidSamples(v) => WTinyLFUError::InvalidSamples(v),
-                TinyLFUError::InvalidFalsePositiveRatio(v) => {
-                    WTinyLFUError::InvalidFalsePositiveRatio(v)
-                }
-            })?;
+            .map_err(WTinyLFUError::from)?;
 
-        Ok(WTinyLFUCache { tinylfu, lru, slru })
+        Ok(WTinyLFUCache {
+            tinylfu,
+            lru,
+            slru,
+            hit_count: 0,
+            total_count: 0,
+        })
     }
 }
 
@@ -294,7 +319,7 @@ impl<K: Hash + Eq, KH: KeyHasher<K>, FH: BuildHasher, RH: BuildHasher, WH: Build
 /// # Example
 /// ```rust
 /// use caches::{WTinyLFUCache, PutResult, Cache};
-/// 
+///
 /// let mut cache = WTinyLFUCache::with_sizes(1, 2, 2, 5).unwrap();
 /// assert_eq!(cache.cap(), 5);
 /// assert_eq!(cache.window_cache_cap(), 1);
@@ -365,6 +390,8 @@ pub struct WTinyLFUCache<
     tinylfu: TinyLFU<K, KH>,
     lru: LRUCache<K, V, WH>,
     slru: SegmentedCache<K, V, FH, RH>,
+    hit_count: u64,
+    total_count: u64,
 }
 
 impl<K: Hash + Eq, V> WTinyLFUCache<K, V, DefaultKeyHasher<K>> {
@@ -464,10 +491,9 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, FH: BuildHasher, RH: BuildHasher, WH: Bu
     /// ```
     ///
     /// [`PutResult`]: struct.PutResult.html
-    fn put(&mut self, k: K, v: V) -> PutResult<K, V>
-    {
+    fn put(&mut self, k: K, v: V) -> PutResult<K, V> {
         #[cfg(any(feature = "nightly", feature = "nightly-core"))]
-        let new_key_ref = &KeyRef {k: &k};
+        let new_key_ref = &KeyRef { k: &k };
 
         #[cfg(not(any(feature = "nightly", feature = "nightly-core")))]
         let new_key_ref = &k;
@@ -483,7 +509,7 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, FH: BuildHasher, RH: BuildHasher, WH: Bu
                     PutResult::Update(v) => PutResult::Update(v),
                     PutResult::Evicted { key, value } => {
                         #[cfg(any(feature = "nightly", feature = "nightly-core"))]
-                        let evicted_key_ref = &KeyRef{k: &key};
+                        let evicted_key_ref = &KeyRef { k: &key };
 
                         #[cfg(not(any(feature = "nightly", feature = "nightly-core")))]
                         let evicted_key_ref = &key;
@@ -496,10 +522,10 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, FH: BuildHasher, RH: BuildHasher, WH: Bu
                             None => self.slru.put(key, value),
                             Some((lruk, _)) => {
                                 #[cfg(any(feature = "nightly", feature = "nightly-core"))]
-                                    let lru_key_ref = &KeyRef{k: lruk};
+                                let lru_key_ref = &KeyRef { k: lruk };
 
                                 #[cfg(not(any(feature = "nightly", feature = "nightly-core")))]
-                                    let lru_key_ref = lruk;
+                                let lru_key_ref = lruk;
 
                                 if self.tinylfu.lt(evicted_key_ref, lru_key_ref) {
                                     PutResult::Evicted { key, value }
@@ -516,8 +542,9 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, FH: BuildHasher, RH: BuildHasher, WH: Bu
             }
             Some(old) => {
                 if self.slru.protected_len() >= self.slru.protected_cap() {
-                    let ent = self.slru.remove_lru_from_protected().unwrap();
-                    self.lru.put(ent.0, ent.1);
+                    if let Some(ent) = self.slru.remove_lru_from_protected() {
+                        self.lru.put(ent.0, ent.1);
+                    }
                 }
 
                 self.slru.put_protected(k, v);
@@ -546,10 +573,16 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, FH: BuildHasher, RH: BuildHasher, WH: Bu
         KeyRef<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
+        self.total_count += 1;
         self.tinylfu.try_reset();
         self.tinylfu.increment(k);
 
-        self.lru.get(k).or_else(|| self.slru.get(k))
+        let result = self.lru.get(k).or_else(|| self.slru.get(k));
+
+        if result.is_some() {
+            self.hit_count += 1;
+        }
+        result
     }
 
     /// Returns a mutable reference to the value of the key in the cache or `None`.
@@ -572,9 +605,15 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, FH: BuildHasher, RH: BuildHasher, WH: Bu
         KeyRef<K>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
+        self.total_count += 1;
         self.tinylfu.try_reset();
         self.tinylfu.increment(k);
-        self.lru.get_mut(k).or_else(|| self.slru.get_mut(k))
+        let result = self.lru.get_mut(k).or_else(|| self.slru.get_mut(k));
+
+        if result.is_some() {
+            self.hit_count += 1;
+        }
+        result
     }
 
     /// Returns a reference to the value corresponding to the key in the cache or `None` if it is
@@ -659,6 +698,14 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, FH: BuildHasher, RH: BuildHasher, WH: Bu
 
     fn is_empty(&self) -> bool {
         self.lru.is_empty() && self.slru.is_empty()
+    }
+
+    fn total_count(&self) -> u64 {
+        self.total_count
+    }
+
+    fn hit_count(&self) -> u64 {
+        self.hit_count
     }
 }
 

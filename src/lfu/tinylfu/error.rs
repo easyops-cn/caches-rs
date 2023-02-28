@@ -8,6 +8,8 @@ pub enum TinyLFUError {
     InvalidSamples(usize),
     /// Invalid false positive ratio for TinyLFU
     InvalidFalsePositiveRatio(f64),
+    /// None Key Hasher for TinyLFU
+    InvalidKeyHasher,
 }
 
 impl TinyLFUError {
@@ -22,6 +24,7 @@ impl TinyLFUError {
                 "invalid false positive ratio: {}, which should be in range (0.0, 1.0)",
                 *v
             ),
+            TinyLFUError::InvalidKeyHasher => write!(f, "Invalid key hasher, which must be set.",),
         }
     }
 }
