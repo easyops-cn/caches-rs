@@ -108,9 +108,7 @@ impl Bloom {
         let raw = (addr_of!(self.bitset[idx >> 6]) as *const u64) as u64;
         let offset = ((idx % 64) >> 3) as u64;
         let ptr = (raw + offset) as *mut u64;
-        unsafe {
-            *ptr |= MASK[idx % 8] as u64;
-        }
+        unsafe { ptr.write_unaligned(ptr.read_unaligned() | MASK[idx % 8] as u64) }
     }
 
     /// `is_set` checks if bit[idx] of bitset is set, returns true/false.
@@ -118,8 +116,9 @@ impl Bloom {
         let raw = (addr_of!(self.bitset[idx >> 6]) as *const u64) as u64;
         let offset = ((idx % 64) >> 3) as u64;
         let ptr = (raw + offset) as *mut u64;
+
         unsafe {
-            let r = (*ptr >> (idx % 8)) & 1;
+            let r = (ptr.read_unaligned() >> (idx % 8)) & 1;
             r == 1
         }
     }
